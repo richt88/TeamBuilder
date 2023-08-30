@@ -8,6 +8,7 @@ import plotly.io as pio
 import plotly.express as px
 from dash import Dash, Input, Output, dash_table, dcc, html
 import dash_bootstrap_components as dbc
+from dash.exceptions import PreventUpdate
 
 import json
 
@@ -40,12 +41,27 @@ skills_dict = {'Stress' : ['FEA', 'Automation', 'Composite Analysis', 'Hand-Calc
                'Principal Engineer':['Leadership', 'Bidding', 'Client Handling', 'Training', 'R&D']}
 
 clear_clicks = 0
+
+local_df = pd.DataFrame(columns=['EID', 'Charge']).to_dict('records')
+
+
+default_charge = {'Graduate Engineer':18, 
+                    'Junior Engineer':24,
+                    'Engineer':28,
+                    'Senior Engineer':35,
+                    'Lead Engineer':42,
+                    'Principal Engineer':47}
+
 ###############################################################################
 # App Layout
+
 app = Dash(__name__, external_stylesheets=[dbc.themes.DARKLY])
 
 
 app.layout = dbc.Container([
+    # Local Data Storage
+    dcc.Store(id='selected_data', data=[], storage_type='memory'),
+    
     # Header 
     dbc.Row([
             dbc.Col([html.H1('Team Builder',className="fs-1 text"),
@@ -75,7 +91,7 @@ app.layout = dbc.Container([
                     width=4)
             ]),
     html.Br(),
-    
+
     # Plots
     dbc.Row([
              dbc.Col([dcc.Graph(id='skill_scatter',
@@ -90,24 +106,41 @@ app.layout = dbc.Container([
     html.Hr(),
     
     # Team Plots
-    html.H3('Team', id='team_title'),
     dbc.Row([
             dbc.Col([
-                html.Div(id='team_stats'),
-                html.Div(id='team_table'),
-                html.Button('Clear List', id='clear_button', n_clicks=0)],
-                width=7),
-            dbc.Col([
-                html.H5('Team Skills Plot'),
+                html.H3('Team Skills Plot'),
                 dcc.RadioItems(id='team_radar_radio',
+                               value='hide',
                                labelStyle = {'display': 'flex'}),
-                html.Div(id='team_radar', children=[])],
-                width=5)
+                ],
+                width=8)
             ]),
-                
+    
+    dbc.Row([
+            dbc.Col([
+                html.Div(id='team_radar', children=[])],
+                width=8,
+                )
+            ],justify='center'),
+    
+    html.Hr(),
+    
+    dbc.Row([
+            dbc.Col([
+                html.H3('Team Summary'),
+                html.Div(id='team_stats',
+                         style={'padding-left': '20px'}),
+                html.Br(),
+                html.Div([dash_table.DataTable(id='data_table')],
+                         id='team_table'),
+                ],
+                width=12)],
+            ),
+    html.Br(),
+    html.Br(),
+    html.Hr(),
+
     ])
-
-
 
 
 ###############################################################################
@@ -206,9 +239,9 @@ def callback_radar_update(hoverData):
         
         
         
-        return  [dcc.Markdown(f"#### {df_filtered['Name'].values[0]}"),
-                 dcc.Markdown(f"###### {df_filtered['Dept'].values[0]} | {df_filtered['Role'].values[0]} | *£{df_filtered['Pay Rate'].values[0]}/hr*"),
-                 dcc.Markdown(f"###### Average {df_hours_6m_mean:.1f} hrs/wk"),
+        return  [dcc.Markdown(f"{df_filtered['Name'].values[0]}"),
+                 dcc.Markdown(f"{df_filtered['Dept'].values[0]} | {df_filtered['Role'].values[0]} | *£{df_filtered['Pay Rate'].values[0]}/hr*"),
+                 dcc.Markdown(f"Average {df_hours_6m_mean:.1f} hrs/wk"),
                  dcc.Graph(id='radar_plot', 
                            figure=fig),
                  ]
@@ -216,65 +249,152 @@ def callback_radar_update(hoverData):
     return []
 
 
-# Add to Team list
+# Add Selected Data
 @app.callback(
-            [Output('team_table', 'children'),
-             Output('team_stats', 'children'),
-             Output('team_radar_radio', 'options')],
+            [Output('selected_data', 'data')],
             [Input('skill_scatter', 'clickData'),
-             Input('clear_button', 'n_clicks')])
-def callback_team_table_update(clickData, n_clicks):
-    global df_merge
-    global clear_clicks
+             Input('selected_data', 'data'),
+             Input('data_table', 'data'),
+             Input('data_table', 'columns')],
+            prevent_initial_call=True)
+def callback_team_table_update(clickData, selected_data, rows, columns):
+
+    if selected_data is None:
+        raise PreventUpdate
+    if clickData is None:
+        raise PreventUpdate        
     
+        
     if clickData:
-        ##### Update Table #####
-        # Filter PDR df
         EID = clickData['points'][0]['customdata'][1]
-        df_merge.loc[EID,'Selected'] = True    
+        EID_list = [x['EID'] for x in selected_data]
+        if EID not in EID_list:
+            role = df_merge.loc[df_merge['EID']==EID]['Role'].values[0]
+            selected_data = selected_data + [{'EID':EID, 'Charge':default_charge[role]}]
+            selected_data = list({v['EID']:v for v in selected_data}.values())
+            
+            return [selected_data]
     
+        else:
+            selected_data = [{'EID':x['EID'], 'Charge':float(x['Charge'])} for x in rows]
+            return [selected_data]
+
+
+# Update Selected Data Table
+@app.callback(
+            [Output('team_table', 'children')],
+            [Input('selected_data', 'data')],
+            prevent_initial_call=True)
+def callback_team_table_update(select_data):
     
-    if n_clicks > clear_clicks:
-        clear_clicks =  n_clicks
-        df_merge['Selected'] = False
-    
-    
-    if clickData:
-        show_cols = ['Name', 'Dept', 'Role', 'Pay Rate']
+    if select_data:
+        show_cols = ['Name', 'EID', 'Dept', 'Role', 'Pay Rate', 'Charge', 'PM']
         
-        df_filtered = df_merge.loc[df_merge['Selected']]  
+        selected_df = pd.DataFrame(select_data).set_index('EID',  
+                                                          drop=False)
+        df_filtered = df_merge.loc[df_merge['EID'].isin(selected_df['EID'])]
+        #df_filtered.loc[:,'Charge Rate'] = [selected_df.loc[e]['Charge'] for e in df_filtered['EID']]
+        df_filtered = df_filtered.merge(selected_df[['Charge']], left_index = True, right_index=True) 
+        df_filtered.loc[:,'PM'] = (((df_filtered['Charge'] / df_filtered['Pay Rate'])-1)*100).round(2)
+
         
-        table = dbc.Table.from_dataframe(df_filtered[show_cols].sort_values(['Dept', 'Pay Rate'], ascending=False),
-                                         id='data_table', 
-                                         striped=True, 
-                                         bordered=True,
-                                         responsive=True)
+        columns = [{'name': 'Name', 'id' :  'Name'},
+                   {'name': 'EID', 'id' :  'EID'},
+                    {'name': 'Dept', 'id' :  'Dept'},
+                    {'name': 'Role', 'id' : 'Role' },
+                    {'name': 'Cost (£/hr)', 'id' :'Pay Rate'  },
+                    {'name': 'Set Charge (£/hr)', 'id' : 'Charge', 'editable': True},
+                    {'name': 'PM (%)', 'id' : 'PM' },]
         
+        table = dash_table.DataTable(data=df_filtered[show_cols].to_dict('records'),
+                                      columns = columns,
+                                      id='data_table',
+                                      style_header={'backgroundColor': 'rgb(30, 30, 30)',
+                                                    'color': 'white',
+                                                    'textAlign':'left'},
+                                      style_data={'backgroundColor': 'rgb(50, 50, 50)',
+                                                  'color': 'white',
+                                                  'textAlign':'left'},
+                                      style_table={'overflowX': 'auto',
+                                                   },
+                                      row_deletable=False,
+                                      style_data_conditional=[
+                                                                {
+                                                                    'if': {
+                                                                        'column_id': 'Charge',
+                                                                    },
+                                                                    'backgroundColor': 'dodgerblue',
+                                                                    'color': 'white'
+                                                                }])
         
-        ##### Update Team Stats #####
-        avg_pay = df_filtered['Pay Rate'].mean()
-        stats = dcc.Markdown(f'###### Team Average Rate - £{avg_pay:.2f}/hr')
-        
-        options = [{'label':dept,
-                    'value': dept} for dept in df_filtered['Dept'].unique() ]
-        
-        return [table], [stats], options
+        return [table]
     
     else: 
-        return [], [], []
+         return []
+
+# Update Selected Team Stats
+@app.callback(
+            [Output('team_stats', 'children')],
+            [Input('selected_data', 'data')],
+            prevent_initial_call=True)
+def callback_team_stats_update(select_data):
+    
+    if select_data:
+        selected_df = pd.DataFrame(select_data).set_index('EID',  
+                                                          drop=False)
+        df_filtered = df_merge.loc[df_merge['EID'].isin(selected_df['EID'])]
+
+        total_cost = df_filtered['Pay Rate'].sum()
+        total_charge = sum([x['Charge'] for x in select_data])
+        GP = (total_charge - total_cost)
+        
+        stats = [dcc.Markdown(f'###### Total Team Cost :   £{total_cost:.2f} /hr'),
+                 dcc.Markdown(f'###### Total Team Charge : £{total_charge:.2f} /hr'),
+                 dcc.Markdown(f'###### Profit :            £{GP:.2f} /hr     ({((GP/total_cost))*100:.2f}%)'),
+                 ]
+        
+        return  [stats]
+    else: 
+         return []
+    
+    
+# Update Team Plots radio
+@app.callback(
+            [Output('team_radar_radio', 'options')],
+            [Input('selected_data', 'data')],
+            prevent_initial_call=True)
+def callback_team_radio_update(select_data):
+    
+    if select_data:
+        selected_df = pd.DataFrame(select_data).set_index('EID',  
+                                                          drop=False)
+        df_filtered = df_merge.loc[df_merge['EID'].isin(selected_df['EID'])]
+
+        options = [{'label':'Hide','value': 'hide'}] +  [{'label':dept,
+                    'value': dept} for dept in df_filtered['Dept'].unique() ]
+        
+        return  [options]
+    else: 
+         return []    
+    
     
 # Team Radar Charts
 @app.callback(
             [Output('team_radar', 'children')],
             [Input('team_radar_radio', 'value'),
-             Input('skill_scatter', 'clickData'),
-             Input('clear_button', 'n_clicks')])
-def callback_team_radar_update(value, click_data, n_clicks):
-    global df_merge
+             Input('selected_data', 'data')],
+            prevent_initial_call=True)
+def callback_team_radar_update(value, select_data):
     
     if value:
+        
+        if value == 'hide':
+            return [" "]
+        
         # Filter data
-        df_filtered = df_merge.loc[(df_merge['Dept'] == value) & (df_merge['Selected']==True)]
+        selected_df = pd.DataFrame(select_data).set_index('EID',  
+                                                          drop=False)
+        df_filtered = df_merge.loc[(df_merge['Dept'] == value) & (df_merge['EID'].isin(selected_df['EID']))]
         skill_cols = skills_dict.get(value) + ['Leadership', 'Bidding', 'Client Handling', 'Training', 'R&D']
         
         fig = go.Figure()
@@ -303,15 +423,15 @@ def callback_team_radar_update(value, click_data, n_clicks):
         return [" "]
 
 
-        
 
+    
 
 ###############################################################################
 # Run Server
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8002)
+    app.run_server(debug=False, port=8002)
 
-
+ 
 
 
 
